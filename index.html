@@ -71,6 +71,49 @@
       <div class="outer">
         <section id="main">
   
+    <article id="post-pageindex过滤相关功能" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
+  <div class="article-meta">
+    <a href="/2022/07/01/pageindex%E8%BF%87%E6%BB%A4%E7%9B%B8%E5%85%B3%E5%8A%9F%E8%83%BD/" class="article-date">
+  <time class="dt-published" datetime="2022-07-01T07:49:14.860Z" itemprop="datePublished">2022-07-01</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+    <div class="e-content article-entry" itemprop="articleBody">
+      
+        <!--
+ * @Author: lcz lcz@git.com
+ * @Date: 2022-06-28 14:12:06
+ * @LastEditors: lcz lcz@git.com
+ * @LastEditTime: 2022-07-01 11:32:16
+ * @FilePath: /github/harpseal/东方国信工作资料/点查询/pageindex过滤相关功能.md
+ * @Description: 这是默认设置,请设置`customMade`, 打开koroFileHeader查看配置 进行设置: https://github.com/OBKoro1/koro1FileHeader/wiki/%E9%85%8D%E7%BD%AE
+-->
+<h1 id="本文记录在构思dp文件pageindex过滤功能的一些图示"><a href="#本文记录在构思dp文件pageindex过滤功能的一些图示" class="headerlink" title="本文记录在构思dp文件pageindex过滤功能的一些图示"></a><strong>本文记录在构思dp文件pageindex过滤功能的一些图示</strong></h1><h2 id="需求列表"><a href="#需求列表" class="headerlink" title="需求列表"></a>需求列表</h2><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br></pre></td><td class="code"><pre><span class="line">@startmindmap</span><br><span class="line"></span><br><span class="line">* dp索引查询优化</span><br><span class="line">** 新增BloomFilter查询优化</span><br><span class="line">*** 建表时需要指定表使用bloomfilter</span><br><span class="line">*** insert时根据tupleschema在生成filemetadata时创建BloomFilter</span><br><span class="line">*** 查询时需要根据filemetadata中有无BloomFilter进行决策</span><br><span class="line">** 过滤条件下推</span><br><span class="line">*** 过滤条件通过计划经scanxo下推到scanner</span><br><span class="line">*** 需要对过滤条件进行解析</span><br><span class="line">** 极值索引查询优化</span><br><span class="line">*** insert时需要将极值写入到pageindex中，rowgroup&amp;column级别的极值、page级别的极值</span><br><span class="line">*** 需要将过滤条件进行下推</span><br><span class="line">*** 对于极值索引过滤，先使用rowgroup&amp;column级别的极值进行过滤，之后使用page级别的极值进行过滤</span><br><span class="line">** 二分法或者遍历page页数据</span><br><span class="line">*** 如果极值有升序或者降序的标志，可以启用二分查找</span><br><span class="line">*** 没有排序标记就遍历</span><br><span class="line">** 空column与page的提前过滤</span><br><span class="line">*** insert需要在columnindex与pageindex里新增空column或空page的标记</span><br><span class="line">*** scanner在进行实际io前需要根据空标记过滤要读取的数据范围</span><br><span class="line">** 字典页的过滤</span><br><span class="line">*** 如果此column中所有的page都使用字典编码，就可以使用字典页中的数据进行过滤</span><br><span class="line">*** 否则不行</span><br><span class="line"></span><br><span class="line">@endmindmap</span><br></pre></td></tr></table></figure>
+
+<h2 id="Scanner部分的运行流程"><a href="#Scanner部分的运行流程" class="headerlink" title="Scanner部分的运行流程"></a>Scanner部分的运行流程</h2><h3 id="open-amp-addrange流程"><a href="#open-amp-addrange流程" class="headerlink" title="open&amp;addrange流程"></a>open&amp;addrange流程</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br></pre></td><td class="code"><pre><span class="line">@startmindmap</span><br><span class="line">* open阶段</span><br><span class="line">** 下推过滤条件解析</span><br><span class="line">*** 过滤列具有单个过滤条件</span><br><span class="line">**** 过滤条件与&quot;null&quot;相关</span><br><span class="line">**** 过滤条件与&quot;null&quot;无关</span><br><span class="line">*** 过滤列具有多个过滤条件</span><br><span class="line">** 过滤列</span><br><span class="line">*** 解析元数据</span><br><span class="line">*** 列级别过滤</span><br><span class="line">**** 判断空列</span><br><span class="line">**** 列级别极值索引</span><br><span class="line">**** bloomfilter</span><br><span class="line">**** 使用字典过滤</span><br><span class="line">*** page级别过滤</span><br><span class="line">**** 判断空page</span><br><span class="line">**** 极值过滤</span><br><span class="line">***** 如果是有序极值，二分法</span><br><span class="line">***** 如果是无序极值，遍历</span><br><span class="line">**** 使用有效page计算有效行号，且addrange</span><br><span class="line">** 查询列</span><br><span class="line">*** 获取过滤列有效page的行号</span><br><span class="line">*** 根据行号计算有效page，addrange</span><br><span class="line">@endmindmap</span><br></pre></td></tr></table></figure>
+<h3 id="read流程"><a href="#read流程" class="headerlink" title="read流程"></a>read流程</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br></pre></td><td class="code"><pre><span class="line">@startmindmap</span><br><span class="line">* read阶段</span><br><span class="line">** 获取mdp</span><br><span class="line">** 读取过滤列page</span><br><span class="line">*** 读过滤列page时，不用考虑空page的影响</span><br><span class="line">** 读取查询列page</span><br><span class="line">*** 读取后需要使用有效行号进行再次过滤</span><br><span class="line">*** 需要考虑空page的影响？</span><br><span class="line">** 将读取后的mdp交由llvm处理</span><br><span class="line">@endmindmap</span><br></pre></td></tr></table></figure>
+<h3 id="对于现有的有序表点查询优化逻辑的适配"><a href="#对于现有的有序表点查询优化逻辑的适配" class="headerlink" title="对于现有的有序表点查询优化逻辑的适配"></a>对于现有的有序表点查询优化逻辑的适配</h3><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">@startmindmap</span><br><span class="line">* 需要适配的方面</span><br><span class="line">** inserter需要在parquet中对有序表的有序列新增极值存储顺序BoundaryOrder</span><br><span class="line">** scanner需要使用二分法对page进行极值过滤</span><br><span class="line">** 不局限于等值</span><br><span class="line">** 在读取时</span><br><span class="line">*** 原方案是在scanner中将过滤后的数据每个行数据都读取到mdp中，可以不需要llvm</span><br><span class="line">*** 也可以考虑只过滤出page范围，数据读取后，交由llvm进行过滤</span><br><span class="line">@endmindmap</span><br></pre></td></tr></table></figure>
+
+
+<h2 id="parquet文件中需要添加的元素"><a href="#parquet文件中需要添加的元素" class="headerlink" title="parquet文件中需要添加的元素"></a>parquet文件中需要添加的元素</h2><figure class="highlight plaintext"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br></pre></td><td class="code"><pre><span class="line">@startmindmap</span><br><span class="line">* 需新增</span><br><span class="line">** ColumnMetaData</span><br><span class="line">*** 是否是空column</span><br><span class="line">*** bloomfilter相关的标记</span><br><span class="line">*** 极值存储顺序BoundaryOrder</span><br><span class="line">** PageIndex</span><br><span class="line">*** 是否是空page</span><br><span class="line">@endmindmap</span><br></pre></td></tr></table></figure>
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://example.com/2022/07/01/pageindex%E8%BF%87%E6%BB%A4%E7%9B%B8%E5%85%B3%E5%8A%9F%E8%83%BD/" data-id="cl525o78q0000h2jqbt91c893" data-title="" class="article-share-link">Share</a>
+      
+      
+      
+    </footer>
+  </div>
+  
+</article>
+
+
+
+  
     <article id="post-README" class="h-entry article article-type-post" itemprop="blogPost" itemscope itemtype="https://schema.org/BlogPosting">
   <div class="article-meta">
     <a href="/2022/07/01/README/" class="article-date">
@@ -1002,6 +1045,10 @@
     <h3 class="widget-title">Recent Posts</h3>
     <div class="widget">
       <ul>
+        
+          <li>
+            <a href="/2022/07/01/pageindex%E8%BF%87%E6%BB%A4%E7%9B%B8%E5%85%B3%E5%8A%9F%E8%83%BD/">(no title)</a>
+          </li>
         
           <li>
             <a href="/2022/07/01/README/">(no title)</a>
